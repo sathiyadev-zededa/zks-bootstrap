@@ -1,0 +1,315 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+#Configuration from /etc/zks-bootstrap/config.env
+CONFIG_FILE="${CONFIG_FILE:-/etc/zks-bootstrap/config.env}"
+TOKEN_FILE="${TOKEN_FILE:-/etc/zks-bootstrap/session.token}"
+AUTH_TOKEN_FILE="${AUTH_TOKEN_FILE:-/etc/zks-bootstrap/auth.token}"
+
+#required variables
+: "${ZEDCONTROL_HOST:=zedcontrol.thor.zededa.dev}"
+: "${ZKS_CLUSTER_NAME:=}" 
+: "${ZKS_PROJECT_ID:=}" 
+: "${K3S_VERSION:=v1.29.7+k3s1}"
+: "${K3S_MODE:=server}"
+: "${K3S_NODE_NAME:=$(hostname -s)}"
+: "${KUBECONFIG:=/etc/rancher/k3s/k3s.yaml}"
+
+#to provide API token
+: "${ZKS_API_TOKEN:=}"
+
+#IF API token not provided use username and password to generate API token
+: "${USERNAME:=}"
+: "${PASSWORD:=}"
+: "${EXPIRES_SECONDS:=7776000}"
+
+base_url="https://${ZEDCONTROL_HOST}"
+
+log() { echo "[$(date -Is)] $*"; }
+
+require_cmd() {
+      command -v "$1" >/dev/null 2>&1 || { echo "ERROR: missing required command: $1"; exit 1; }
+}
+
+load_config() {
+    if [[ -f "$CONFIG_FILE" ]]; then
+        source $CONFIG_FILE
+    fi 
+}
+
+curl_json() {
+    local method="$1"; shift
+    local url="$1"; shift
+    local token="${1:-}"; shift || true
+    local body="${1:-}"
+
+    if [[ -n "$token" ]]; then
+        if [[ -n "$body" ]]; then
+            curl -sS -X "$method" "$url" \
+                -H "Authorization: Bearer ${token}" \
+                -H "Content-Type: application/json" \
+                --data "$body"
+        else
+            curl -sS -X "$method" "$url" \
+             -H "Authorization: Bearer ${token}" \
+             -H "Content-Type: application/json"
+        fi
+    else
+        if [[ -n "$body" ]]; then
+            curl -sS -X "$method" "$url" \
+            -H "Content-Type: application/json" \
+            --data "$body"
+        else
+            curl -sS -X "$method" "$url" \
+                -H "Content-Type: application/json"
+        fi
+    fi
+}
+
+ensure_dirs() {
+    mkdir -p /etc/zks-bootstrap
+    chmod 700 /etc/zks-bootstrap
+}
+
+install_k3s() {
+    if command -v k3s >/dev/null 2>&1; then
+        log "k3s already installed; skipping install."
+        return
+    fi
+
+    log "Installing k3s ${K3S_VERSION} (${K3S_MODE})..."
+    export INSTALL_K3S_VERSION="${K3S_VERSION}"
+
+    #mkdir -p /etc/rancher/k3s
+
+    #install 
+    curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="${K3S_VERSION}" sh -s - server
+}
+
+wait_k3s_ready() {
+    log "Waiting for k3s API to become ready..."
+    for i in {1..120}; do
+        if [[ -f "$KUBECONFIG" ]] && kubectl --kubeconfig "$KUBECONFIG" get nodes >/dev/null 2>&1; then
+            log "k3s API reachable."
+            break
+        fi
+        sleep 2
+    done
+
+    log "Waiting for node to be Ready..."
+    for i in {1..180}; do
+        if kubectl --kubeconfig "$KUBECONFIG" get nodes | grep -q " Ready "; then
+            log "Node is Ready."
+            return
+        fi
+        sleep 2
+    done
+
+    log "ERROR: k3s did not become ready in time."
+    kubectl --kubeconfig "$KUBECONFIG" get nodes -o wide || true
+    exit 1
+}
+
+get_session_token() {
+    # If ZKS_API_TOKEN is already provided  use it else generate token using user credentials
+    if [[ -n "${ZKS_API_TOKEN}" ]]; then
+        echo "${ZKS_API_TOKEN}"
+        return
+    fi
+
+    if [[ -f "$TOKEN_FILE" ]]; then
+        cat "$TOKEN_FILE"
+        return
+    fi
+
+    if [[ -z "${USERNAME}" || -z "${PASSWORD}" ]]; then
+        log "ERROR: Need either ZKS_API_TOKEN OR USERNAME/PASSWORD."
+        exit 1
+    fi
+
+    log "Logging in to create session token..."
+    require_cmd jq
+
+    login_resp="$(curl_json POST "${base_url}/api/v1/login" "" \
+        "$(jq -n --arg u "$USERNAME" --arg p "$PASSWORD" '{usernameAtRealm:$u, password:$p}')" \
+    )"
+
+    auth_token="$(echo "$login_resp" | jq -r '.token.base64 // empty')"
+    enterprise_id="$(echo "$login_resp" | jq -r '.detailedUser.enterpriseId // empty')"
+
+    if [[ -z "$auth_token" || -z "$enterprise_id" ]]; then
+        log "ERROR: login response missing token or enterpriseId"
+        echo "$login_resp" | jq .
+        exit 1
+    fi
+
+    session_resp="$(curl_json POST "${base_url}/api/v1/sessions/token/self" "$auth_token" \
+    "$(jq -n --arg eid "$enterprise_id" --argjson exp "$EXPIRES_SECONDS" '{enterpriseId:$eid, expires:$exp}')" \
+    )"
+
+    session_token="$(echo "$session_resp" | jq -r '.apiToken.base64 // empty')"
+    if [[ -z "$session_token" ]]; then
+        log "ERROR: session response missing apiToken.base64"
+        echo "$session_resp" | jq .
+        exit 1
+    fi
+
+    echo "$session_token" >"$TOKEN_FILE"
+    chmod 600 "$TOKEN_FILE"
+    echo "$session_token"
+}
+
+#ZEDEDA ZKS Specific API call
+zks_import_post() {
+    local token="$1"
+    require_cmd jq
+
+    local payload
+    payload="$(jq -n \
+        --arg name "$ZKS_CLUSTER_NAME" \
+        --arg projectId "$ZKS_PROJECT_ID" \
+        '{
+            name: $name,
+            projectId: $projectId
+        }'
+    )"
+
+    curl_json POST "${base_url}/api/v1/zks/instances/import" "$token" "$payload"
+}
+
+#get join token and manifest
+zks_import_manifest_get() {
+    local token="$1"
+    local instance_id="$2"
+
+    curl -sS -X GET "${base_url}/api/v1/zks/instances/id/${instance_id}/registration-commands" \
+        -H "Authorization: Bearer ${token}" \
+        -H "Accept: application/yaml"
+}
+
+zks_instance_get() {
+    local token="$1"
+    local instance_id="$2"
+    curl_json GET "${base_url}/api/v1/zks/instances/id/${instance_id}" "$token"
+}
+
+zks_instance_get_by_name() {
+    local token="$1"
+    local zksname="$2"
+    curl_json GET "${base_url}/api/v1/zks/instances/status?zksname=${zksname}&next.orderBy=name:ASC" \
+         -H "Authorization: Bearer ${token}" \
+         -H "Content-Type: application/json"
+}
+
+apply_manifest() {
+    local manifest_url="$1"
+    log "Applying ZKS import manifest to cluster..."
+    curl -sfL "$manifest_url" | kubectl apply -f -
+    if ! curl -sfL "$manifest_url" | kubectl apply -f -; then
+        curl --insecure -sfL "$manifest_url" | kubectl apply -f -
+    fi
+}
+
+wait_zks_online() {
+  local token="$1"
+  local zksname="$2"
+
+  log "Waiting for ZKS cluster '$zksname' to become ONLINE..."
+
+  for i in {1..180}; do
+    local resp runState
+
+    resp="$(curl -sS -X GET \
+      "${base_url}/api/v1/zks/instances/status?zksname=${zksname}&next.orderBy=name:ASC" \
+      -H "Authorization: Bearer ${token}" \
+      -H "Content-Type: application/json" \
+      || true
+    )"
+
+    if ! echo "$resp" | jq -e . >/dev/null 2>&1; then
+      log "ZKS status: <unknown> (non-JSON / transient response)"
+      sleep 5
+      continue
+    fi
+
+    runState="$(echo "$resp" | jq -r '.list[0].runState // empty')"
+
+    if [[ -z "$runState" ]]; then
+      log "ZKS runState: <unknown> (no list[0].runState yet)"
+    else
+      log "ZKS runState: $runState"
+    fi
+
+    case "$runState" in
+      RUN_STATE_ONLINE) return 0 ;;
+      RUN_STATE_ERROR)
+        log "ZKS reports ERROR state. Dumping response:"
+        echo "$resp" | jq . 1>&2
+        return 1
+        ;;
+    esac
+
+    sleep 5
+  done
+
+  log "WARNING: cluster did not reach RUN_STATE_ONLINE within timeout."
+  return 1
+}
+
+
+main() {
+    require_cmd curl
+
+    load_config
+    ensure_dirs
+
+    if [[ -z "${ZKS_CLUSTER_NAME}" || -z "${ZKS_PROJECT_ID}" ]]; then
+        log "ERROR: ZKS_CLUSTER_NAME and ZKS_PROJECT_ID must be set."
+        exit 1
+    fi
+
+    install_k3s
+    require_cmd kubectl
+
+    wait_k3s_ready
+
+    local token
+    token="$(get_session_token)"
+
+    log "Calling ZKS import POST..."
+    import_resp="$(zks_import_post "$token")"
+    echo "before printing import response"
+    echo "$import_resp"
+    echo "After import"
+    require_cmd jq
+    instance_id="$(echo "$import_resp" | jq -r '.objectId // .id // empty')"
+    if [[ -z "$instance_id" ]]; then
+        log "ERROR: import response missing instance id. Response:"
+        echo "$import_resp" | jq .
+        exit 1
+    fi
+
+    log "Import instance id: $instance_id"
+    log "Fetching import manifest (GET)..."
+    response="$(zks_import_manifest_get "$token" "$instance_id")"
+    manifest_url="$(echo "$response" | jq -r '.manifestUrl')"
+
+    if [[ -z "$manifest_url" ]]; then
+        log "ERROR: empty manifest from GET."
+        exit 1
+    fi
+
+    apply_manifest "$manifest_url"
+    wait_zks_online "$token" "$ZKS_CLUSTER_NAME" || true
+    log "Bootstrap complete."
+}
+
+main "$@"
+
+
+
+
+
+
+

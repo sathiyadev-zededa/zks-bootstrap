@@ -1,0 +1,18 @@
+#!/bin/sh
+set -e
+LOG=/var/log/zks-bootstrap-install.log
+mkdir -p /var/log
+
+echo "[postinst] zks-bootstrap installing..."
+
+mkdir -p /etc/zks-bootstrap
+chmod 700 /etc/zks-bootstrap || true
+
+if [ -f /etc/zks-bootstrap/config.env ]; then
+  chmod 600 /etc/zks-bootstrap/config.env || true
+fi
+
+chmod 0755 /usr/sbin/zks-bootstrap || true
+/usr/sbin/zks-bootstrap 2>&1 | tee -a "$LOG"
+echo "[postinst] done."
+exit 0
