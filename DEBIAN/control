@@ -2,7 +2,7 @@ Package: zks-bootstrap
 Version: 0.1.0
 Section: admin
 Priority: optional
-Architecture: amd64
+Architecture: all
 Maintainer: ZEDEDA DEV team
 Depends: bash (>= 4.0), curl, jq, ca-certificates
 Description: ZEDEDA ZKS bootstrapper. Installs a bootstrap script and configuration. The script installs k3s using get.k3s.io and imports the cluster into ZEDEDA ZKS.
