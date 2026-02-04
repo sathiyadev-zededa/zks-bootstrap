@@ -8,7 +8,7 @@ else
   PKG_DIR="${PKG_DIR:-zks-bootstrap_0.1.0}"
 fi
 
-OUT_DEB="${OUT_DEB:-../zks-bootstrap_0.1.0_amd64.deb}"
+OUT_DEB="${OUT_DEB:-../zks-bootstrap_0.1.0.deb}"
 
 
 [[ -d "$PKG_DIR/DEBIAN" ]] || { echo "ERROR: $PKG_DIR/DEBIAN not found"; exit 1; }
