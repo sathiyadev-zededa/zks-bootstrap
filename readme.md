@@ -12,7 +12,7 @@ No `systemd` services are created or managed by this package.
 During installation, the package:
 
 1. Reads configuration from `/etc/zks-bootstrap/config.env`
-2. Installs **K3s** using the official installer (`get.k3s.io`)
+2. Installs **K3s** using the official installer (`get.k3s.io`) or from a pre-downloaded binary in case of an airgap environment
 3. Waits for the Kubernetes API and node to become ready
 4. Authenticates with ZEDEDA (API token or username/password)
 5. Creates a ZKS cluster instance
