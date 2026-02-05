@@ -18,6 +18,10 @@ AUTH_TOKEN_FILE="${AUTH_TOKEN_FILE:-/etc/zks-bootstrap/auth.token}"
 : "${PASSWORD:=}"
 : "${EXPIRES_SECONDS:=7776000}"
 
+: "${K3S_OFFLINE:=0}"
+: "${K3S_ARTIFACT_DIR:=/usr/share/zks-bootstrap/k3s}"
+: "${K3S_INSTALL_SH:=}"
+
 base_url="https://${ZEDCONTROL_HOST}"
 
 log() { echo "[$(date -Is)] $*"; }
@@ -132,6 +136,24 @@ ensure_k3s_snapshotter_arm() {
 snapshotter: $snap
 YAML
   chmod 0644 "$cfg" || true
+}
+
+install_k3s_offline() {
+    local k3s_bin
+    local install_sh
+
+    if is_arm64; then
+        k3s_bin="/usr/share/zks-bootstrap/k3s-arm64"
+    else
+        k3s_bin="/usr/share/zks-bootstrap/k3s"
+    fi 
+    log "Installing k3s binary from the local binary: $k3s_bin"
+
+    cp ${k3s_bin} /usr/local/bin/k3s
+    chmod +x /usr/local/bin/k3s
+    cp ${K3S_INSTALL_SH} /usr/local/bin/install.sh
+    chmod +x /usr/local/bin/install.sh
+    INSTALL_K3S_SKIP_DOWNLOAD=true /usr/local/bin/install.sh
 }
 
 install_k3s() {
@@ -324,9 +346,15 @@ main() {
   # ARM-only overlay workaround
   ensure_k3s_snapshotter_arm
 
-  install_k3s
-  require_cmd kubectl
+  if [[ "${K3S_OFFLINE}" == "1" ]]; then
+    log "Install K3s in airgap environment"
+    install_k3s_offline
+  else
+    log "Installing from online repository... Pulling K3s binary from upstream"
+    install_k3s
+  fi
 
+  require_cmd kubectl
   wait_k3s_ready
 
   local token
@@ -335,6 +363,7 @@ main() {
   log "Calling ZKS import POST..."
   local import_resp instance_id
   import_resp="$(zks_import_post "$token")"
+  log "Debug:::: import resp $import_resp"
   instance_id="$(echo "$import_resp" | jq -r '.objectId // .id // empty')"
 
   if [[ -z "$instance_id" ]]; then

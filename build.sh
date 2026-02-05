@@ -15,7 +15,6 @@ OUT_DEB="${OUT_DEB:-../zks-bootstrap_0.1.0.deb}"
 [[ -f "$PKG_DIR/DEBIAN/control" ]] || { echo "ERROR: missing DEBIAN/control"; exit 1; }
 [[ -f "$PKG_DIR/usr/sbin/zks-bootstrap" ]] || { echo "ERROR: missing usr/sbin/zks-bootstrap"; exit 1; }
 
-
 chmod 0755 "$PKG_DIR/DEBIAN/postinst"
 chmod 0755 "$PKG_DIR/DEBIAN/prerm"
 chmod 0644 "$PKG_DIR/DEBIAN/control"

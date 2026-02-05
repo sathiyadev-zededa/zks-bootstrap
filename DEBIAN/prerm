@@ -4,7 +4,7 @@ set -e
 echo "[prerm] zks-bootstrap removing runtime tokens..."
 rm -f /etc/zks-bootstrap/session.token /etc/zks-bootstrap/auth.token 2>/dev/null || true
 case "$1" in
-  remove|upgrade|deconfigure)
+  remove|deconfigure)
     echo "[prerm] Uninstalling K3s if present..."
 
     if [ -x /usr/local/bin/k3s-uninstall.sh ]; then
