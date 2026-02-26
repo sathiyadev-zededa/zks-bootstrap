@@ -4,6 +4,7 @@ set -euo pipefail
 CONFIG_FILE="${CONFIG_FILE:-/etc/zks-bootstrap/config.env}"
 TOKEN_FILE="${TOKEN_FILE:-/etc/zks-bootstrap/session.token}"
 AUTH_TOKEN_FILE="${AUTH_TOKEN_FILE:-/etc/zks-bootstrap/auth.token}"
+STATE_FILE="${STATE_FILE:-/etc/zks-bootstrap/state.env}"
 
 : "${ZEDCONTROL_HOST:=zedcontrol.thor.zededa.dev}"
 : "${ZKS_CLUSTER_NAME:=}"
@@ -25,6 +26,32 @@ AUTH_TOKEN_FILE="${AUTH_TOKEN_FILE:-/etc/zks-bootstrap/auth.token}"
 base_url="https://${ZEDCONTROL_HOST}"
 
 log() { echo "[$(date -Is)] $*"; }
+
+load_state() {
+  if [[ -f "$STATE_FILE" ]]; then
+    # state file contains simple KEY=\"VALUE\" pairs
+    # shellcheck source=/etc/zks-bootstrap/state.env
+    source "$STATE_FILE"
+  fi
+}
+
+persist_state() {
+  local tmp="${STATE_FILE}.tmp"
+  umask 077
+  cat >"$tmp" <<EOF
+ZKS_BOOTSTRAP_PHASE="${ZKS_BOOTSTRAP_PHASE:-}"
+ZKS_BOOTSTRAP_INSTANCE_ID="${ZKS_BOOTSTRAP_INSTANCE_ID:-}"
+ZKS_BOOTSTRAP_MANIFEST_URL="${ZKS_BOOTSTRAP_MANIFEST_URL:-}"
+EOF
+  mv "$tmp" "$STATE_FILE"
+}
+
+set_phase() {
+  local phase="$1"
+  ZKS_BOOTSTRAP_PHASE="$phase"
+  log "Transitioning bootstrap phase -> ${ZKS_BOOTSTRAP_PHASE}"
+  persist_state
+}
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || { echo "ERROR: missing required command: $1"; exit 1; }
@@ -202,16 +229,15 @@ wait_k3s_ready() {
 }
 
 get_session_token() {
+  # If a long‑lived API token is provided, always prefer it.
   if [[ -n "${ZKS_API_TOKEN}" ]]; then
     echo "${ZKS_API_TOKEN}"
     return
   fi
 
-  if [[ -f "$TOKEN_FILE" ]]; then
-    cat "$TOKEN_FILE"
-    return
-  fi
-
+  # Otherwise, always log in with USERNAME/PASSWORD on each run to obtain
+  # a fresh session token, so we are never stuck with an expired token
+  # from a previous run.
   if [[ -z "${USERNAME}" || -z "${PASSWORD}" ]]; then
     log "ERROR: Need either ZKS_API_TOKEN OR USERNAME/PASSWORD."
     exit 1
@@ -337,56 +363,111 @@ main() {
 
   load_config
   ensure_dirs
+  load_state
 
   if [[ -z "${ZKS_CLUSTER_NAME}" || -z "${ZKS_PROJECT_ID}" ]]; then
     log "ERROR: ZKS_CLUSTER_NAME and ZKS_PROJECT_ID must be set."
     exit 1
   fi
 
-  # ARM-only overlay workaround
-  ensure_k3s_snapshotter_arm
+  ZKS_BOOTSTRAP_PHASE="${ZKS_BOOTSTRAP_PHASE:-}"
+  log "Current bootstrap phase: ${ZKS_BOOTSTRAP_PHASE:-<unset>}"
 
-  if [[ "${K3S_OFFLINE}" == "1" ]]; then
-    log "Install K3s in airgap environment"
-    install_k3s_offline
+  # 1) Ensure k3s is installed and node is Ready
+  if [[ "${ZKS_BOOTSTRAP_PHASE}" != "K3S_READY" && "${ZKS_BOOTSTRAP_PHASE}" != "IMPORT_CREATED" && "${ZKS_BOOTSTRAP_PHASE}" != "MANIFEST_APPLIED" && "${ZKS_BOOTSTRAP_PHASE}" != "COMPLETED" ]]; then
+    # ARM-only overlay workaround
+    ensure_k3s_snapshotter_arm
+
+    if [[ "${K3S_OFFLINE}" == "1" ]]; then
+      log "Install K3s in airgap environment"
+      install_k3s_offline
+    else
+      log "Installing from online repository... Pulling K3s binary from upstream"
+      install_k3s
+    fi
+
+    require_cmd kubectl
+    wait_k3s_ready
+    set_phase "K3S_READY"
   else
-    log "Installing from online repository... Pulling K3s binary from upstream"
-    install_k3s
+    log "k3s phase already reached (${ZKS_BOOTSTRAP_PHASE}); skipping k3s install/wait."
   fi
 
-  require_cmd kubectl
-  wait_k3s_ready
-
+  # Always (re)acquire a usable session token; underlying helper caches it on disk.
   local token
   token="$(get_session_token)"
 
-  log "Calling ZKS import POST..."
-  local import_resp instance_id
-  import_resp="$(zks_import_post "$token")"
-  log "Debug:::: import resp $import_resp"
-  instance_id="$(echo "$import_resp" | jq -r '.objectId // .id // empty')"
+  # 2) Ensure a ZKS instance exists (idempotent across retries)
+  if [[ "${ZKS_BOOTSTRAP_PHASE}" != "IMPORT_CREATED" && "${ZKS_BOOTSTRAP_PHASE}" != "MANIFEST_APPLIED" && "${ZKS_BOOTSTRAP_PHASE}" != "COMPLETED" ]]; then
+    local instance_id import_resp existing_resp existing_id
 
-  if [[ -z "$instance_id" ]]; then
-    log "ERROR: import response missing instance id. Response:"
-    echo "$import_resp" | jq .
-    exit 1
+    if [[ -n "${ZKS_BOOTSTRAP_INSTANCE_ID:-}" ]]; then
+      log "Using previously recorded ZKS instance id: ${ZKS_BOOTSTRAP_INSTANCE_ID}"
+      instance_id="${ZKS_BOOTSTRAP_INSTANCE_ID}"
+    else
+      log "Checking for existing ZKS instance by name '${ZKS_CLUSTER_NAME}'..."
+      existing_resp="$(zks_instance_get_by_name "$token" "$ZKS_CLUSTER_NAME" || true)"
+      if [[ -n "$existing_resp" ]] && echo "$existing_resp" | jq -e . >/dev/null 2>&1; then
+        existing_id="$(echo "$existing_resp" | jq -r '.list[0].objectId // .list[0].id // empty')"
+      else
+        existing_id=""
+      fi
+
+      if [[ -n "$existing_id" ]]; then
+        log "Found existing ZKS instance '${ZKS_CLUSTER_NAME}' (id=${existing_id}); skipping import POST."
+        instance_id="$existing_id"
+      else
+        log "Calling ZKS import POST to create new instance..."
+        import_resp="$(zks_import_post "$token")"
+        log "Debug:::: import resp $import_resp"
+        instance_id="$(echo "$import_resp" | jq -r '.objectId // .id // empty')"
+      fi
+    fi
+
+    if [[ -z "$instance_id" ]]; then
+      log "ERROR: missing ZKS instance id (neither existing nor newly created)."
+      exit 1
+    fi
+
+    ZKS_BOOTSTRAP_INSTANCE_ID="$instance_id"
+    set_phase "IMPORT_CREATED"
+  else
+    log "ZKS import phase already reached (${ZKS_BOOTSTRAP_PHASE}); skipping import creation."
   fi
 
-  log "Import instance id: $instance_id"
-  log "Fetching import manifest (GET)..."
-  local response manifest_url
-  response="$(zks_import_manifest_get "$token" "$instance_id")"
-  manifest_url="$(echo "$response" | jq -r '.manifestUrl // empty')"
+  # 3) Fetch and apply manifest once, then wait for ZKS to come online
+  if [[ "${ZKS_BOOTSTRAP_PHASE}" != "MANIFEST_APPLIED" && "${ZKS_BOOTSTRAP_PHASE}" != "COMPLETED" ]]; then
+    local response manifest_url
 
-  if [[ -z "$manifest_url" ]]; then
-    log "ERROR: registration-commands response missing manifestUrl. Response:"
-    echo "$response" | jq .
-    exit 1
+    if [[ -n "${ZKS_BOOTSTRAP_MANIFEST_URL:-}" ]]; then
+      manifest_url="${ZKS_BOOTSTRAP_MANIFEST_URL}"
+      log "Using previously recorded manifest URL."
+    else
+      log "Fetching import manifest (GET)..."
+      response="$(zks_import_manifest_get "$token" "$ZKS_BOOTSTRAP_INSTANCE_ID")"
+      manifest_url="$(echo "$response" | jq -r '.manifestUrl // empty')"
+    fi
+
+    if [[ -z "$manifest_url" ]]; then
+      log "ERROR: registration-commands response missing manifestUrl."
+      exit 1
+    fi
+
+    ZKS_BOOTSTRAP_MANIFEST_URL="$manifest_url"
+    apply_manifest "$manifest_url"
+    set_phase "MANIFEST_APPLIED"
+  else
+    log "Manifest phase already reached (${ZKS_BOOTSTRAP_PHASE}); skipping manifest fetch/apply."
   fi
 
-  apply_manifest "$manifest_url"
-  wait_zks_online "$token" "$ZKS_CLUSTER_NAME" || true
-  log "Bootstrap complete."
+  if [[ "${ZKS_BOOTSTRAP_PHASE}" != "COMPLETED" ]]; then
+    wait_zks_online "$token" "$ZKS_CLUSTER_NAME" || true
+    set_phase "COMPLETED"
+  else
+    log "Bootstrap already marked COMPLETED; skipping ZKS wait."
+  fi
+
+  log "Bootstrap complete (phase=${ZKS_BOOTSTRAP_PHASE})."
 }
 
 main "$@"

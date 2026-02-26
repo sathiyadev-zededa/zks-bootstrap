@@ -1,5 +1,6 @@
 #!/bin/sh
 set -e
+
 LOG=/var/log/zks-bootstrap-install.log
 mkdir -p /var/log
 
@@ -13,6 +14,20 @@ if [ -f /etc/zks-bootstrap/config.env ]; then
 fi
 
 chmod 0755 /usr/sbin/zks-bootstrap || true
-/usr/sbin/zks-bootstrap 2>&1 | tee -a "$LOG"
+
+# If systemd is available, install as a oneshot service that will
+# handle retries and logging via journald, instead of running inline
+# during dpkg.
+if command -v systemctl >/dev/null 2>&1; then
+  echo "[postinst] detected systemd; enabling zks-bootstrap.service"
+  systemctl daemon-reload || true
+  systemctl enable zks-bootstrap.service || true
+  # Start once in the background; it will resume from state on failures.
+  systemctl start zks-bootstrap.service || true
+else
+  echo "[postinst] systemd not found; running zks-bootstrap directly"
+  /usr/sbin/zks-bootstrap >> "$LOG" 2>&1 || true
+fi
+
 echo "[postinst] done."
 exit 0

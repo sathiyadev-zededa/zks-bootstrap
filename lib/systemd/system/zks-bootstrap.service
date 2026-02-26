@@ -1,0 +1,16 @@
+[Unit]
+Description=ZEDEDA ZKS Bootstrap
+Documentation=https://github.com/sathiyadev-zededa/zks-bootstrap
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/zks-bootstrap
+# Retry if the bootstrap script fails due to transient issues
+Restart=on-failure
+RestartSec=30s
+
+[Install]
+WantedBy=multi-user.target
+
