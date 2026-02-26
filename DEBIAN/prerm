@@ -3,6 +3,16 @@ set -e
 
 echo "[prerm] zks-bootstrap removing runtime tokens..."
 rm -f /etc/zks-bootstrap/session.token /etc/zks-bootstrap/auth.token 2>/dev/null || true
+rm -f /etc/zks-bootstrap
+
+# Stop and disable systemd service if present, so we cleanly remove
+# our oneshot bootstrap unit during package removal/upgrade.
+if command -v systemctl >/dev/null 2>&1; then
+  echo "[prerm] stopping and disabling zks-bootstrap.service (if present)..."
+  systemctl stop zks-bootstrap.service 2>/dev/null || true
+  systemctl disable zks-bootstrap.service 2>/dev/null || true
+fi
+
 case "$1" in
   remove|deconfigure)
     echo "[prerm] Uninstalling K3s if present..."

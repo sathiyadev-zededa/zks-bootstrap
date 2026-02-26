@@ -32,7 +32,8 @@ fi
 #bash -n "$PKG_DIR/usr/sbin/zks-bootstrap"
 
 # Build
-dpkg-deb --build "$PKG_DIR" "$OUT_DEB"
+#dpkg-deb --build "$PKG_DIR" "$OUT_DEB"
+dpkg-deb --build --root-owner-group "$PKG_DIR" "$OUT_DEB"
 echo "Built: $OUT_DEB"
 
 echo "Inspect:"
