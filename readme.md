@@ -3,7 +3,6 @@
 This package installs **K3s** and automatically **imports the Kubernetes cluster into ZEDEDA ZKS** during package installation.
 
 The bootstrap logic is executed **once at install time** via `dpkg -i`.  
-No `systemd` services are created or managed by this package.
 
 ---
 
