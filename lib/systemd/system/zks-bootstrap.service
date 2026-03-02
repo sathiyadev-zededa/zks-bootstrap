@@ -10,6 +10,8 @@ ExecStart=/usr/sbin/zks-bootstrap
 # Retry if the bootstrap script fails due to transient issues
 Restart=on-failure
 RestartSec=30s
+StandardOutput=append:/var/log/zks-bootstrap.log
+StandardError=append:/var/log/zks-bootstrap.log
 
 [Install]
 WantedBy=multi-user.target

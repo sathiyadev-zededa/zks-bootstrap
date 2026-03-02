@@ -23,7 +23,7 @@ STATE_FILE="${STATE_FILE:-/etc/zks-bootstrap/state.env}"
 : "${K3S_ARTIFACT_DIR:=/usr/share/zks-bootstrap/k3s}"
 : "${K3S_INSTALL_SH:=}"
 
-base_url="https://${ZEDCONTROL_HOST}"
+#base_url="https://${ZEDCONTROL_HOST}"
 
 log() { echo "[$(date -Is)] $*"; }
 
@@ -365,6 +365,7 @@ main() {
   ensure_dirs
   load_state
 
+  base_url="https://${ZEDCONTROL_HOST}"
   if [[ -z "${ZKS_CLUSTER_NAME}" || -z "${ZKS_PROJECT_ID}" ]]; then
     log "ERROR: ZKS_CLUSTER_NAME and ZKS_PROJECT_ID must be set."
     exit 1
@@ -420,7 +421,7 @@ main() {
         log "Calling ZKS import POST to create new instance..."
         import_resp="$(zks_import_post "$token")"
         log "Debug:::: import resp $import_resp"
-        instance_id="$(echo "$import_resp" | jq -r '.objectId // .id // empty')"
+        instance_id="$(echo "$import_resp" | jq -r '.objectId')"
       fi
     fi
 
