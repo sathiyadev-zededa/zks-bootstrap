@@ -357,6 +357,24 @@ wait_zks_online() {
   return 1
 }
 
+check_zks_pods_ready() {
+  require_cmd kubectl
+  local not_ready=0
+  log "Checking ZKS pod health..."
+
+  # cluster agent
+  if ! kubectl -n zks-system get pod \
+    -l app=zks-cluster-agent \
+    --field-selector=status.phase=Running \
+    >/dev/null 2>&1; then
+    log "zks-cluster-agent not Running"
+    not_ready=1
+  fi
+
+  return $not_ready
+}
+
+
 main() {
   require_cmd curl
   require_cmd jq
@@ -463,8 +481,15 @@ main() {
 
   if [[ "${ZKS_BOOTSTRAP_PHASE}" != "COMPLETED" ]]; then
     wait_zks_online "$token" "$ZKS_CLUSTER_NAME" || true
-    set_phase "COMPLETED"
-  else
+
+    if check_zks_pods_ready; then
+      log "All ZKS pods are Running. Marking bootstrap COMPLETED."
+      set_phase "COMPLETED"
+    else
+      log "ZKS pods not ready yet. Will retry on next run."
+      exit 1
+    fi
+    
     log "Bootstrap already marked COMPLETED; skipping ZKS wait."
   fi
 
