@@ -129,7 +129,7 @@ install_pkg_if_missing() {
   fi
 }
 
-ensure_k3s_snapshotter_arm() {
+ensure_k3s_config_arm() {
   if ! is_arm64; then
     return 0
   fi
@@ -161,6 +161,9 @@ ensure_k3s_snapshotter_arm() {
   log "Writing $cfg with snapshotter: $snap"
   cat >"$cfg" <<YAML
 snapshotter: $snap
+kubelet-arg:
+  - "cpu-manager-policy=static"
+  - "cpu-manager-reconcile-period=10s"
 YAML
   chmod 0644 "$cfg" || true
 }
@@ -395,7 +398,7 @@ main() {
   # 1) Ensure k3s is installed and node is Ready
   if [[ "${ZKS_BOOTSTRAP_PHASE}" != "K3S_READY" && "${ZKS_BOOTSTRAP_PHASE}" != "IMPORT_CREATED" && "${ZKS_BOOTSTRAP_PHASE}" != "MANIFEST_APPLIED" && "${ZKS_BOOTSTRAP_PHASE}" != "COMPLETED" ]]; then
     # ARM-only overlay workaround
-    ensure_k3s_snapshotter_arm
+    ensure_k3s_config_arm
 
     if [[ "${K3S_OFFLINE}" == "1" ]]; then
       log "Install K3s in airgap environment"
