@@ -1,0 +1,89 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  deployment.yaml — Webhook pod + Service
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "rt-webhook.fullname" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "rt-webhook.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "rt-webhook.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "rt-webhook.selectorLabels" . | nindent 8 }}
+      annotations:
+        rollout: "1"
+    spec:
+      serviceAccountName: {{ include "rt-webhook.fullname" . }}
+      imagePullSecrets:
+        - name: {{ .Values.imagePullSecret.name }}
+
+      containers:
+        - name: rt-webhook
+          image: {{ include "rt-webhook.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+
+          ports:
+            - name:          https
+              containerPort: 8443
+              protocol:      TCP
+          volumeMounts:
+            - name:      tls-certs
+              mountPath: /certs
+              readOnly:  true
+
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+
+          livenessProbe:
+            httpGet:
+              path:   /health
+              port:   8443
+              scheme: HTTPS
+            initialDelaySeconds: 10
+            periodSeconds:       30
+            failureThreshold:    3
+
+          readinessProbe:
+            httpGet:
+              path:   /health
+              port:   8443
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds:       10
+            failureThreshold:    3
+          env:
+            - name:  RT_CPU_CORE
+              value: {{ .Values.webhook.rtCpuCore | quote }}
+            - name:  RT_LABEL
+              value: {{ .Values.webhook.rtLabel | quote }}
+            - name:  RT_VALUE
+              value: {{ .Values.webhook.rtValue | quote }}
+
+      volumes:
+        - name: tls-certs
+          secret:
+            secretName: {{ include "rt-webhook.fullname" . }}-tls
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "rt-webhook.fullname" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "rt-webhook.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "rt-webhook.selectorLabels" . | nindent 4 }}
+  ports:
+    - name:       https
+      port:       443      
+      targetPort: 8443     
+      protocol:   TCP

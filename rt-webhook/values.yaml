@@ -1,0 +1,46 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  values.yaml — RT Webhook Helm Chart
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Namespace ─────────────────────────────────────────────────────────────────
+namespace: aramco-demo
+
+# ── Webhook image ─────────────────────────────────────────────────────────────
+image:
+  repository: commonpoc.azurecr.io/aramco-rt-webhook   # ← change this
+  tag:        "1.0.0"
+  pullPolicy: IfNotPresent    
+
+# ── Private registry pull secret ─────────────────────────────────────────────
+imagePullSecret:
+  name: regcred
+  dockerconfigjson: "eyJhdXRocyI6eyJjb21tb25wb2MuYXp1cmVjci5pbyI6eyJ1c2VybmFtZSI6ImNvbW1vbnBvYyIsInBhc3N3b3JkIjoiSkk4MDgzKz1Ob2VybGZlL0N1dThieW8yT3RCTHdSNXoiLCJhdXRoIjoiWTI5dGJXOXVjRzlqT2twSk9EQTRNeXM5VG05bGNteG1aUzlEZFhVNFlubHZNazkwUWt4M1VqVjYifX19"
+
+# ── RT webhook behaviour ──────────────────────────────────────────────────────
+webhook:
+  rtCpuCore: "3"
+
+  # Pod label that triggers mutation
+  rtLabel: "rt-workload"
+  rtValue: "true"
+
+  failurePolicy: Ignore
+
+  # How long k3s API server waits for webhook response before timing out
+  timeoutSeconds: 10
+
+  # Namespace opt-in label — the webhook watches any namespace carrying this label.
+  namespaceLabel: "rt-webhook-enabled"
+
+# ── Webhook pod resources ─────────────────────────────────────────────────────
+resources:
+  requests:
+    cpu:    50m
+    memory: 64Mi
+  limits:
+    cpu:    200m
+    memory: 128Mi
+
+# ── Replica count ────────────────────────────────────────────────────────────
+
+replicaCount: 1

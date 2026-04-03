@@ -1,0 +1,142 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  tls.yaml
+#
+#  Replaces cert-gen-job.yaml + webhook-config.yaml entirely.
+#
+#  TLS strategy:
+#    • genCA / genSignedCert built into Helm 3 — zero runtime dependencies,
+#      zero Jobs, zero ServiceAccounts, zero hook ordering problems.
+#    • Certs are generated at `helm install` / `helm upgrade` template-render
+#      time, not inside the cluster.
+#    • lookup() preserves existing certs on upgrade — no cert churn.
+#    • Both Secret and MutatingWebhookConfiguration share the SAME $tls dict,
+#      so caBundle ALWAYS matches the server cert — no post-install patching.
+#
+#  First install:  Secret does not exist → genCA + genSignedCert → store.
+#  Upgrade:        Secret already exists → lookup → reuse existing values.
+#  Cert rotation:  kubectl delete secret <release>-rt-webhook-tls -n <ns>
+#                  then helm upgrade — new certs are generated automatically.
+# ─────────────────────────────────────────────────────────────────────────────
+
+{{- $fullname  := include "rt-webhook.fullname" . -}}
+{{- $namespace := .Values.namespace -}}
+
+{{- /* DNS SANs — all names by which the k3s API server can reach the webhook */ -}}
+{{- $dnsNames := list
+      $fullname
+      (printf "%s.%s"                   $fullname $namespace)
+      (printf "%s.%s.svc"               $fullname $namespace)
+      (printf "%s.%s.svc.cluster.local" $fullname $namespace) -}}
+
+{{- /* ── Cert resolution ──────────────────────────────────────────────────── */}}
+{{- /*                                                                          */}}
+{{- /*  $tls holds the three PEM values (already base64-encoded) that are       */}}
+{{- /*  written into the Secret and into caBundle.                              */}}
+{{- /*                                                                          */}}
+{{- /*  On upgrade, lookup() returns the existing Secret so the same CA/cert   */}}
+{{- /*  is reused — prevents needless cert churn or webhook downtime.           */}}
+{{- $tls           := dict "crt" "" "key" "" "ca" "" -}}
+{{- $secretName    := printf "%s-tls" $fullname -}}
+{{- $existingSecret := lookup "v1" "Secret" $namespace $secretName -}}
+{{- if and $existingSecret $existingSecret.data -}}
+  {{- /*  Upgrade path: reuse values already stored in the Secret.              */}}
+  {{- /*  .data values are already base64-encoded inside Kubernetes.            */}}
+  {{- $_ := set $tls "crt" (index $existingSecret.data "tls.crt") -}}
+  {{- $_ := set $tls "key" (index $existingSecret.data "tls.key") -}}
+  {{- $_ := set $tls "ca"  (index $existingSecret.data "ca.crt")  -}}
+{{- else -}}
+  {{- /*  First-install path: generate a fresh Root CA + signed server cert.   */}}
+  {{- /*  Both are valid for 10 years (3650 days).                              */}}
+  {{- /*  genCA / genSignedCert return Go structs; .Cert / .Key are PEM strings */}}
+  {{- /*  so we base64-encode them to match Kubernetes Secret .data format.     */}}
+  {{- $ca   := genCA   (printf "%s-ca" $fullname) 3650 -}}
+  {{- $cert := genSignedCert
+        (printf "%s.%s.svc" $fullname $namespace)
+        nil
+        $dnsNames
+        3650
+        $ca -}}
+  {{- $_ := set $tls "crt" ($cert.Cert | b64enc) -}}
+  {{- $_ := set $tls "key" ($cert.Key  | b64enc) -}}
+  {{- $_ := set $tls "ca"  ($ca.Cert   | b64enc) -}}
+{{- end -}}
+
+# ── TLS Secret ────────────────────────────────────────────────────────────────
+#  Contains three keys:
+#    tls.crt — server certificate   (mounted by webhook pod at /certs/tls.crt)
+#    tls.key — server private key   (mounted by webhook pod at /certs/tls.key)
+#    ca.crt  — Root CA certificate  (referenced in caBundle below)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $secretName }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "rt-webhook.labels" . | nindent 4 }}
+  annotations:
+    # Document when these certs were (re)generated
+    rt-webhook/cert-generated-by: "helm-genCA-genSignedCert"
+    rt-webhook/cert-validity-days: "3650"
+type: kubernetes.io/tls
+data:
+  tls.crt: {{ $tls.crt }}
+  tls.key: {{ $tls.key }}
+  # Extra key — not part of standard TLS secret type but harmless;
+  # used below for caBundle without any external lookup.
+  ca.crt:  {{ $tls.ca }}
+
+---
+# ── MutatingWebhookConfiguration ─────────────────────────────────────────────
+#
+#  caBundle is populated directly from $tls.ca — the same value that was just
+#  written into the Secret.  No post-install Job, no annotation injection,
+#  no timing window where caBundle and the server cert could be out of sync.
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "rt-webhook.labels" . | nindent 4 }}
+
+webhooks:
+  - name: {{ $fullname }}.zededa.com
+
+    admissionReviewVersions: ["v1"]
+    sideEffects:    None
+    failurePolicy:  {{ .Values.webhook.failurePolicy }}
+    timeoutSeconds: {{ .Values.webhook.timeoutSeconds }}
+
+    # ── Only intercept pod CREATE ─────────────────────────────────────────────
+    rules:
+      - operations:  ["CREATE"]
+        apiGroups:   [""]
+        apiVersions: ["v1"]
+        resources:   ["pods"]
+        scope:       "Namespaced"
+
+    # ── Opt-in namespace selector ────────────────────────────────────────────
+    # Only intercepts pods in namespaces that have been explicitly labelled:
+    #   kubectl label namespace <name> rt-webhook-enabled=true
+    #
+    # System namespaces (kube-system, kube-public) are never labelled so
+    # they are always excluded automatically.
+    namespaceSelector:
+      matchLabels:
+        {{ .Values.webhook.namespaceLabel }}: "true"
+
+    # ── Only pods with the RT trigger label ──────────────────────────────────
+    objectSelector:
+      matchLabels:
+        {{ .Values.webhook.rtLabel }}: {{ .Values.webhook.rtValue | quote }}
+
+    # ── Webhook endpoint ─────────────────────────────────────────────────────
+    clientConfig:
+      # caBundle = Root CA that signed the webhook's server cert.
+      # The k3s API server uses this to verify the webhook's TLS certificate.
+      # Value is base64-encoded PEM — same bytes that are in the Secret above.
+      caBundle: {{ $tls.ca }}
+      service:
+        name:      {{ $fullname }}
+        namespace: {{ $namespace }}
+        path:      /mutate
+        port:      443

@@ -1,0 +1,28 @@
+
+
+Useful commands:
+
+  # Check webhook pod
+  kubectl get pods -n {{ .Values.namespace }} -l app.kubernetes.io/name=rt-webhook
+
+  # Watch webhook logs
+  kubectl logs -l app.kubernetes.io/name=rt-webhook -n {{ .Values.namespace }} -f
+
+  # Check certificate status
+  kubectl get certificate -n {{ .Values.namespace }}
+
+  # Run a test pod (should get taskset injected automatically)
+  kubectl run rt-test --image=busybox --restart=Never \
+    -n {{ .Values.namespace }} \
+    --labels="{{ .Values.webhook.rtLabel }}={{ .Values.webhook.rtValue }}" \
+    -- sleep 60
+
+  kubectl get pod rt-test -n {{ .Values.namespace }} \
+    -o jsonpath='{.spec.containers[0].command}'
+  # Expected: ["taskset","-c","{{ .Values.webhook.rtCpuCore }}","sleep","60"]
+
+  # Upgrade with new values
+  helm upgrade {{ .Release.Name }} ./rt-webhook -f my-values.yaml
+
+  # Uninstall
+  helm uninstall {{ .Release.Name }}

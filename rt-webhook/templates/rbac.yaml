@@ -1,0 +1,11 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  rbac.yaml — ServiceAccount for the webhook pod
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "rt-webhook.fullname" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "rt-webhook.labels" . | nindent 4 }}
+automountServiceAccountToken: false
