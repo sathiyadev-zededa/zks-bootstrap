@@ -164,6 +164,7 @@ snapshotter: $snap
 kubelet-arg:
   - "cpu-manager-policy=static"
   - "cpu-manager-reconcile-period=10s"
+  - "reserved-cpus=0,1,2"
 YAML
   chmod 0644 "$cfg" || true
 }
