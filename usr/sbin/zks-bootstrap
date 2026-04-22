@@ -7,6 +7,7 @@ AUTH_TOKEN_FILE="${AUTH_TOKEN_FILE:-/etc/zks-bootstrap/auth.token}"
 STATE_FILE="${STATE_FILE:-/etc/zks-bootstrap/state.env}"
 
 : "${ZEDCONTROL_HOST:=zedcontrol.thor.zededa.dev}"
+: "${ZEDCONTROL_INSECURE:=0}"             # 1=skip TLS verification (curl --insecure)
 : "${ZKS_CLUSTER_NAME:=}"
 : "${ZKS_PROJECT_ID:=}"
 : "${K3S_VERSION:=v1.29.7+k3s1}"
@@ -65,30 +66,40 @@ load_config() {
   fi
 }
 
+curl_common_args() {
+  local -a args=(-sS)
+  if [[ "${ZEDCONTROL_INSECURE}" == "1" ]]; then
+    args+=(--insecure)
+  fi
+  printf '%s\n' "${args[@]}"
+}
+
 curl_json() {
   local method="$1"; shift
   local url="$1"; shift
   local token="${1:-}"; shift || true
   local body="${1:-}"
+  local -a common
+  mapfile -t common < <(curl_common_args)
 
   if [[ -n "$token" ]]; then
     if [[ -n "$body" ]]; then
-      curl -sS -X "$method" "$url" \
+      curl "${common[@]}" -X "$method" "$url" \
         -H "Authorization: Bearer ${token}" \
         -H "Content-Type: application/json" \
         --data "$body"
     else
-      curl -sS -X "$method" "$url" \
+      curl "${common[@]}" -X "$method" "$url" \
         -H "Authorization: Bearer ${token}" \
         -H "Content-Type: application/json"
     fi
   else
     if [[ -n "$body" ]]; then
-      curl -sS -X "$method" "$url" \
+      curl "${common[@]}" -X "$method" "$url" \
         -H "Content-Type: application/json" \
         --data "$body"
     else
-      curl -sS -X "$method" "$url" \
+      curl "${common[@]}" -X "$method" "$url" \
         -H "Content-Type: application/json"
     fi
   fi
@@ -296,8 +307,10 @@ zks_import_post() {
 zks_import_manifest_get() {
   local token="$1"
   local instance_id="$2"
+  local -a common
+  mapfile -t common < <(curl_common_args)
 
-  curl -sS -X GET "${base_url}/api/v1/zks/instances/id/${instance_id}/registration-commands" \
+  curl "${common[@]}" -X GET "${base_url}/api/v1/zks/instances/id/${instance_id}/registration-commands" \
     -H "Authorization: Bearer ${token}" \
     -H "Accept: application/json"
 }
@@ -305,8 +318,10 @@ zks_import_manifest_get() {
 zks_instance_get_by_name() {
   local token="$1"
   local zksname="$2"
+  local -a common
+  mapfile -t common < <(curl_common_args)
 
-  curl -sS -X GET \
+  curl "${common[@]}" -X GET \
     "${base_url}/api/v1/zks/instances/status?zksname=${zksname}&next.orderBy=name:ASC" \
     -H "Authorization: Bearer ${token}" \
     -H "Content-Type: application/json"
@@ -316,6 +331,11 @@ apply_manifest() {
   local manifest_url="$1"
   log "Applying ZKS import manifest to cluster..."
 
+  if [[ "${ZEDCONTROL_INSECURE}" == "1" ]]; then
+    curl --insecure -sfL "$manifest_url" | kubectl --kubeconfig "$KUBECONFIG" apply -f -
+    return
+  fi
+
   if ! curl -sfL "$manifest_url" | kubectl --kubeconfig "$KUBECONFIG" apply -f -; then
     curl --insecure -sfL "$manifest_url" | kubectl --kubeconfig "$KUBECONFIG" apply -f -
   fi
@@ -324,12 +344,14 @@ apply_manifest() {
 wait_zks_online() {
   local token="$1"
   local zksname="$2"
+  local -a common
+  mapfile -t common < <(curl_common_args)
 
   log "Waiting for ZKS cluster '$zksname' to become ONLINE..."
 
   for i in {1..180}; do
     local resp runState
-    resp="$(curl -sS -X GET \
+    resp="$(curl "${common[@]}" -X GET \
       "${base_url}/api/v1/zks/instances/status?zksname=${zksname}&next.orderBy=name:ASC" \
       -H "Authorization: Bearer ${token}" \
       -H "Content-Type: application/json" \

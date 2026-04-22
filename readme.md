@@ -19,3 +19,13 @@ During installation, the package:
 7. Waits until the cluster reaches **RUN_STATE_ONLINE**
 
 ---
+
+## TLS / insecure ZEDEDA endpoint
+
+If your ZEDEDA endpoint uses a self-signed/untrusted TLS certificate, set this in `/etc/zks-bootstrap/config.env`:
+
+```bash
+ZEDCONTROL_INSECURE=1
+```
+
+This makes the bootstrapper use `curl --insecure` for ZEDEDA/ZKS API calls and for downloading the registration manifest.
