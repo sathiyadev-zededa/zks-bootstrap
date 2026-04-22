@@ -8,6 +8,8 @@ STATE_FILE="${STATE_FILE:-/etc/zks-bootstrap/state.env}"
 
 : "${ZEDCONTROL_HOST:=zedcontrol.thor.zededa.dev}"
 : "${ZEDCONTROL_INSECURE:=0}"             # 1=skip TLS verification (curl --insecure)
+: "${K3S_REGISTRY_HOST:=forgejo-zks.local.zededa.net}"
+: "${K3S_REGISTRY_INSECURE_SKIP_VERIFY:=1}"  # 1=write registries.yaml with insecure_skip_verify
 : "${ZKS_CLUSTER_NAME:=}"
 : "${ZKS_PROJECT_ID:=}"
 : "${K3S_VERSION:=v1.29.7+k3s1}"
@@ -178,6 +180,41 @@ kubelet-arg:
   - "reserved-cpus=0,1,2"
 YAML
   chmod 0644 "$cfg" || true
+}
+
+ensure_k3s_registries_yaml() {
+  # Configure private registry mirror for K3s/containerd.
+  # Must exist before k3s starts so it can pull images.
+  if [[ -z "${K3S_REGISTRY_HOST}" ]]; then
+    return 0
+  fi
+
+  mkdir -p /etc/rancher/k3s
+  local reg="/etc/rancher/k3s/registries.yaml"
+
+  if [[ "${K3S_REGISTRY_INSECURE_SKIP_VERIFY}" == "1" ]]; then
+    cat >"$reg" <<YAML
+mirrors:
+  "${K3S_REGISTRY_HOST}":
+    endpoint:
+      - "https://${K3S_REGISTRY_HOST}"
+
+configs:
+  "${K3S_REGISTRY_HOST}":
+    tls:
+      insecure_skip_verify: true
+YAML
+  else
+    cat >"$reg" <<YAML
+mirrors:
+  "${K3S_REGISTRY_HOST}":
+    endpoint:
+      - "https://${K3S_REGISTRY_HOST}"
+YAML
+  fi
+
+  chmod 0644 "$reg" || true
+  log "Wrote k3s registries config: $reg (host=${K3S_REGISTRY_HOST})"
 }
 
 install_k3s_offline() {
@@ -422,6 +459,7 @@ main() {
   if [[ "${ZKS_BOOTSTRAP_PHASE}" != "K3S_READY" && "${ZKS_BOOTSTRAP_PHASE}" != "IMPORT_CREATED" && "${ZKS_BOOTSTRAP_PHASE}" != "MANIFEST_APPLIED" && "${ZKS_BOOTSTRAP_PHASE}" != "COMPLETED" ]]; then
     # ARM-only overlay workaround
     ensure_k3s_config_arm
+    ensure_k3s_registries_yaml
 
     if [[ "${K3S_OFFLINE}" == "1" ]]; then
       log "Install K3s in airgap environment"

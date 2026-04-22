@@ -29,3 +29,14 @@ ZEDCONTROL_INSECURE=1
 ```
 
 This makes the bootstrapper use `curl --insecure` for ZEDEDA/ZKS API calls and for downloading the registration manifest.
+
+## K3s registry mirror (registries.yaml)
+
+If your cluster pulls images from an internal registry, the bootstrapper can write `/etc/rancher/k3s/registries.yaml`.
+
+Defaults (configurable in `/etc/zks-bootstrap/config.env`):
+
+```bash
+K3S_REGISTRY_HOST="forgejo-zks.local.zededa.net"
+K3S_REGISTRY_INSECURE_SKIP_VERIFY=1
+```
